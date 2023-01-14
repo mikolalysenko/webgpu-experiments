@@ -1,0 +1,26 @@
+{
+  "name": "webgpu-experiments",
+  "version": "1.0.0",
+  "description": "WebGPU experiments",
+  "private": true,
+  "scripts": {
+    "build:html": "ts-node ./src/build-html.ts",
+    "watch:js": "esbuild --bundle ./src/demos/* --outdir=dist/ --watch --servedir=dist",
+    "watch": "npm run build:html && npm run watch:js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mikolalysenko/webgpu-experiments.git"
+  },
+  "author": "Mikola Lysenko",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mikolalysenko/webgpu-experiments/issues"
+  },
+  "homepage": "https://github.com/mikolalysenko/webgpu-experiments#readme",
+  "devDependencies": {
+    "@types/node": "^18.11.18",
+    "esbuild": "^0.17.0",
+    "ts-node": "^10.9.1"
+  }
+}
