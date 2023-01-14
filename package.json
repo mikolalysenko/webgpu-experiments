@@ -7,7 +7,7 @@
     "build:html": "ts-node ./src/build-html.ts",
     "build:js": "esbuild --bundle ./src/demos/* --outdir=dist/",
     "build": "npm run build:html && npm run build:js",
-    "gh-pages": "npm run build && git branch -D gh-pages && git switch --orphan gh-pages && mv dist/* . && git add . && git commit -m '.' && git push origin gh-pages && git checkout master",
+    "gh-pages": "npm run build && git branch -D gh-pages && git checkout --orphan gh-pages && mv dist/* . && rm -rf node_modules && rm -rf dist && git add . && git commit -m '.' && git push origin gh-pages && git checkout master",
     "watch:js": "esbuild --sourcemap --bundle ./src/demos/* --outdir=dist/ --watch --servedir=dist",
     "watch": "npm run build:html && npm run watch:js"
   },
