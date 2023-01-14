@@ -29,13 +29,35 @@ async function main () {
     })
   } catch {}
   // write all the files to the destination dir
+  const fileList:string[] = []
   for (const file of await fs.readdir(DEMO_DIR)) {
     const basename = path.basename(file, '.ts')
     await fs.writeFile(
       path.join(DIST_DIR, `${basename}.html`),
       htmlTemplate(basename)
     )
+    fileList.push(`${basename}.html`)
   }
+  // write index file
+  await fs.writeFile(
+    path.join(DIST_DIR, `index.html`),
+    `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Mik's WebGPU experiments</title>
+  </head>
+  <body>
+    <ul>
+      ${fileList.map((p) => `<li><a href="/${p}">${p}</a></li>`).join('\n')}
+    </ul>
+  </body>
+</html>
+`
+
+  )
 }
 
 main().catch((err) => {
