@@ -16,7 +16,7 @@
     "url": "git+https://github.com/mikolalysenko/webgpu-experiments.git"
   },
   "author": "Mikola Lysenko",
-  "license": "ISC",
+  "license": "MIT",
   "bugs": {
     "url": "https://github.com/mikolalysenko/webgpu-experiments/issues"
   },
