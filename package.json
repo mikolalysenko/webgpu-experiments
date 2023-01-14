@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "build:html": "ts-node ./src/build-html.ts",
-    "watch:js": "esbuild --bundle ./src/demos/* --outdir=dist/ --watch --servedir=dist",
+    "watch:js": "esbuild --sourcemap --bundle ./src/demos/* --outdir=dist/ --watch --servedir=dist",
     "watch": "npm run build:html && npm run watch:js"
   },
   "repository": {
@@ -20,6 +20,7 @@
   "homepage": "https://github.com/mikolalysenko/webgpu-experiments#readme",
   "devDependencies": {
     "@types/node": "^18.11.18",
+    "@webgpu/types": "^0.1.24",
     "esbuild": "^0.17.0",
     "ts-node": "^10.9.1"
   }
