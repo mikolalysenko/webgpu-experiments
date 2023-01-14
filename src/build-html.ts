@@ -51,7 +51,7 @@ async function main () {
   </head>
   <body>
     <ul>
-      ${fileList.map((p) => `<li><a href="/${p}">${p}</a></li>`).join('\n')}
+      ${fileList.map((p) => `<li><a href="${p}">${p}</a></li>`).join('\n')}
     </ul>
   </body>
 </html>
