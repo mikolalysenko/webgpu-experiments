@@ -15,7 +15,10 @@ const htmlTemplate = (name:string) =>
     <title>${name} : Mikola's WebGPU experiment</title>
   </head>
   <body>
-  <script src="${name}.js"></script>
+    <div style="position:absolute;left:0;top:0;margin:0;padding-left:0;padding-right:0;padding-top:10px;padding-bottom:10px;text-align:center;width:100%;z-index:10;background-color:rgba(255,255,255,0.5);font-weight:bold;">
+      <a href="https://github.com/mikolalysenko/webgpu-experiments/tree/master/src/demos/${name}.ts">${name}.ts</a>
+    </div>
+    <script src="${name}.js"></script>
   </body>
 </html>
 `
@@ -46,7 +49,7 @@ async function main () {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
-    <title>Mik's WebGPU experiments</title>
+    <title>Mikola's WebGPU experiments</title>
   </head>
   <body>
     <ul>
