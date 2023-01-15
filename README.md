@@ -1,4 +1,4 @@
-# [Mik's WebGPU experiments](https://mikolalysenko.github.io/webgpu-experiments/index.html)
+# [Mikola's WebGPU experiments](https://mikolalysenko.github.io/webgpu-experiments/index.html)
 
 Minimal experiments in learning WebGPU.
 
