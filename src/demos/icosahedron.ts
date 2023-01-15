@@ -85,7 +85,7 @@ fn fragMain(@location(0) fragColor : vec3<f32>) -> @location(0) vec4<f32> {
           shaderLocation: 0,
           offset: 0,
           format: 'float32x3',
-        } as const]
+        }]
       }]
     },
     fragment: {
@@ -102,7 +102,7 @@ fn fragMain(@location(0) fragColor : vec3<f32>) -> @location(0) vec4<f32> {
       depthCompare: 'less',
       format: 'depth24plus'
     }
-  })
+  } as const)
 
   const depthTexture = device.createTexture({
     size: [canvas.width, canvas.height],
