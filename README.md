@@ -2,9 +2,10 @@
 
 Minimal experiments in learning WebGPU.
 
-Not much to see here yet, more demos coming soon.
-
 * [Hello world triangle](https://mikolalysenko.github.io/webgpu-experiments/triangle.html)
+* [Rotating icosahedron](https://mikolalysenko.github.io/webgpu-experiments/icosahedron.html)
+
+Not much to see here yet, more demos coming soon.  Check [log](LOG.md) for updates.
 
 # Development
 

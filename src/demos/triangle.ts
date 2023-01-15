@@ -1,10 +1,11 @@
-import { canvas, mustHave } from '../boilerplate'
+import { makeCanvas, mustHave } from '../boilerplate'
 
 async function main () {
   const adapter = mustHave(await navigator.gpu.requestAdapter())
   const device = await adapter.requestDevice()
-  const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+  const presentationFormat = navigator.gpu.getPreferredCanvasFormat()
 
+  const canvas = makeCanvas()
   const context = mustHave(canvas.getContext('webgpu'))
   context.configure({
     device,
@@ -63,12 +64,12 @@ fn vertMain(
           storeOp: 'store',
         } as const,
       ],
-    });
-    passEncoder.setPipeline(pipeline);
-    passEncoder.draw(3, 1, 0, 0);
-    passEncoder.end();
-    device.queue.submit([commandEncoder.finish()]);
-    requestAnimationFrame(frame);
+    })
+    passEncoder.setPipeline(pipeline)
+    passEncoder.draw(3, 1, 0, 0)
+    passEncoder.end()
+    device.queue.submit([commandEncoder.finish()])
+    requestAnimationFrame(frame)
   }
   frame()
 }

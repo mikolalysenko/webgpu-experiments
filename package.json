@@ -26,5 +26,8 @@
     "@webgpu/types": "^0.1.24",
     "esbuild": "^0.17.0",
     "ts-node": "^10.9.1"
+  },
+  "dependencies": {
+    "gl-matrix": "^3.4.3"
   }
 }

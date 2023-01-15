@@ -7,17 +7,19 @@ export function mustHave<T>(x:T|null|undefined) : T {
 }
 mustHave(navigator.gpu)
 
-function isCanvas (element:HTMLElement|null) : element is HTMLCanvasElement {
-  if (!element) {
-    return false
-  }
-  return /^canvas$/i.test(element.tagName)
+export function makeCanvas () {
+  const canvas = document.createElement('canvas')
+  Object.assign(canvas.style, {
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
+    left: '0',
+    top: '0',
+    margin: '0',
+    padding: '0'
+  })
+  canvas.width = window.innerWidth * window.devicePixelRatio
+  canvas.height = window.innerHeight * window.devicePixelRatio
+  document.body.appendChild(canvas)
+  return canvas
 }
-
-const _canvas = document.getElementById('mainCanvas')
-if (!isCanvas(_canvas)) {
-  throw new Error('Error loading main canvas element')
-}
-_canvas.width = window.innerWidth
-_canvas.height = window.innerHeight
-export const canvas:HTMLCanvasElement = _canvas
