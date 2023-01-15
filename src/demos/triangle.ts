@@ -66,7 +66,7 @@ fn vertMain(
       ],
     })
     passEncoder.setPipeline(pipeline)
-    passEncoder.draw(3, 1, 0, 0)
+    passEncoder.draw(3)
     passEncoder.end()
     device.queue.submit([commandEncoder.finish()])
     requestAnimationFrame(frame)

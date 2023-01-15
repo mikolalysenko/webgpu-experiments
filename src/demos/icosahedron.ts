@@ -159,7 +159,7 @@ fn fragMain(@location(0) fragColor : vec3<f32>) -> @location(0) vec4<f32> {
     passEncoder.setBindGroup(0, uniformBindGroup)
     passEncoder.setVertexBuffer(0, icoVerts)
     passEncoder.setIndexBuffer(icoFaces, 'uint16')
-    passEncoder.drawIndexed(60, 1, 0, 0)
+    passEncoder.drawIndexed(60)
     passEncoder.end()
     device.queue.submit([commandEncoder.finish()])
     requestAnimationFrame(frame)
