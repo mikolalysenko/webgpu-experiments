@@ -63,7 +63,7 @@ fn vertMain(
   var params = spriteParams[instanceIdx];
 
   var seed = params.seed;
-  var tick = uniforms.tick + 10. * (seed.x + seed.y + seed.z + seed.w);
+  var tick = 0.25 * uniforms.tick + 10. * (seed.x + seed.y + seed.z + seed.w);
   var dotPosition = cos(seed.w * tick + 1.5766) * normalize(vec3(
     sin(seed.x * tick + 3.),
     sin(seed.y * tick + 1.5),
@@ -86,7 +86,7 @@ fn fragMain(
   @location(1) pointCoord : vec2<f32>,
   @location(2) shape : vec4<f32>,
 ) -> @location(0) vec4<f32> {
-  let t = fract(atan2(pointCoord.y, pointCoord.x) * shape.x);
+  let t = fract(atan2(pointCoord.y, pointCoord.x) * shape.x + shape.w * uniforms.tick);
   let r = length(pointCoord);
   let tri = abs(t - floor(t + 0.5));
   let cut = mix(shape.y, shape.z, tri);
@@ -109,7 +109,7 @@ fn fragMain(
       (3 + (i % 10)) / (2.0 * Math.PI),
       (1 + (i % 3)) / 3,
       (1 + (i % 7)) / 7,
-      0
+      Math.random() - 0.5
     ]
     for (let j = 0; j < 4; ++j) {
       spriteParams[3 * 4 * i + j] = Math.random()
@@ -201,7 +201,7 @@ fn fragMain(
   function frame (tick:number) {
     mat4.perspective(projection, Math.PI / 4, canvas.width / canvas.height, 0.01, 50.0)
     mat4.lookAt(view, [0, 1, -3], [0, 0, 0], [0, 1, 0])
-    mat4.fromRotation(model, 0.001 * tick, [0, 1, 0])
+    mat4.fromRotation(model, 0.0005 * tick, [0, 1, 0])
     vec4.copy(fog, PALETTE[0] as vec4)
     uniformData[52] = 0.001 * tick
     
