@@ -50,7 +50,7 @@ fn integrate(@builtin(global_invocation_id) threadId : vec3<u32>) {
   var p0 = prevPosition[index];
   var f = force[index];
 
-  var v = p1 - p0 + 0.0001 * f * ${1 / PARTICLE_MASS};
+  var v = 0.98 * (p1 - p0 + 0.0001 * f * ${1 / PARTICLE_MASS});
   var p2 = p1 + v;
 
   if p2.x < -1. {
