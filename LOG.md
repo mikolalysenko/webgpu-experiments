@@ -1,5 +1,12 @@
 # Project log
 
+## 01-16-2023
+
+* Decided to try implementing [Hunar's particle life](https://github.com/hunar4321/particle-life) using compute shaders.  Still doesn't quite look right but overall structure seems fine.
+* Right now I do 16 passes to handle all pairwise interactions but it might be more efficient to pack all the particles together and do it in 1 shot.
+* Not really sure yet how to best select workgroup sizes, need to experiment a bit more.
+* So far, I really like WebGPU!  The API is very thoughtfully designed and once this is more widely supported I can see it fully replacing WebGL for basically everything.  The people behind this have done an amazing job!  I'm very impressed with how carefully considered and elegantly everything works. A++++ job
+
 ## 01-15-2023
 
 * Working through documentation on WebGPU API.  Built another trivial demo with a rotating icosahedron to test my knowledge of uniforms and indexed rendering.
