@@ -1,7 +1,7 @@
 import { makeCanvas, mustHave } from '../boilerplate'
 
 const NUM_SPECIES = 4
-const NUM_PARTICLES = 4096
+const NUM_PARTICLES = 1 << 13
 
 const BG_COLOR = { r: 0.00392, g: 0.0863, b: 0.153, a: 1.0 }
 const PARTICLE_COLORS = [
