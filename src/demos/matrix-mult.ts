@@ -1,4 +1,3 @@
-import * as glMatrix from 'gl-matrix'
 import { mustHave } from '../boilerplate'
 
 async function main () {
