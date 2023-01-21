@@ -6,6 +6,7 @@ Minimal experiments in learning WebGPU.
 * [Rotating icosahedron](https://mikolalysenko.github.io/webgpu-experiments/icosahedron.html)
 * [Point sprites](https://mikolalysenko.github.io/webgpu-experiments/sprites.html)
 * [Particle life](https://mikolalysenko.github.io/webgpu-experiments/particle-life.html)
+* [Matrix multiplication](https://mikolalysenko.github.io/webgpu-experiments/matrix-mult.html)
 
 Not much to see here yet, more demos coming soon.  Check [log](LOG.md) for updates.
 
