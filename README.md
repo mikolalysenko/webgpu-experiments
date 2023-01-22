@@ -1,14 +1,15 @@
 # [Mikola's WebGPU experiments](https://mikolalysenko.github.io/webgpu-experiments/index.html)
 
-Minimal experiments in learning WebGPU.
+I'm learning WebGPU.  Here's what I've built so far:
 
 * [Hello world triangle](https://mikolalysenko.github.io/webgpu-experiments/triangle.html)
 * [Rotating icosahedron](https://mikolalysenko.github.io/webgpu-experiments/icosahedron.html)
 * [Point sprites](https://mikolalysenko.github.io/webgpu-experiments/sprites.html)
 * [Particle life](https://mikolalysenko.github.io/webgpu-experiments/particle-life.html)
 * [Matrix multiplication](https://mikolalysenko.github.io/webgpu-experiments/matrix-mult.html)
+* [Prefix sum](https://mikolalysenko.github.io/webgpu-experiments/prefix-sum.html)
 
-Not much to see here yet, more demos coming soon.  Check [log](LOG.md) for updates.
+For project history, check the [log](LOG.md).
 
 # Development
 

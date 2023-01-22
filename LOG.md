@@ -1,5 +1,13 @@
 # Project log
 
+## 01-23-2023
+
+* Started working on a really terrible, not-very-parllel, non-work efficient prefix sum.
+* Current idea is based on sqrt decomposition of the fenwick tree into 2 levels.  We compute prefix sums on each level by brute force for now
+* In the future should try replacing the brute force steps with Blelloch-style parallel prefix sum.
+* Not very happy with current performance or code complexity, need to figure out a simpler way to do this for future plans...
+* Refactored UI boilerplate for benchmarks into a common module
+
 ## 01-21-2023
 
 * Had to force myself to do something today.  Wrote a really trivial blocked matrix multiply algorithm.  Nice example of a self contained compute shader.

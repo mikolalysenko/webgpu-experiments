@@ -1,4 +1,4 @@
-import { mustHave } from '../boilerplate'
+import { makeBench, mustHave } from '../boilerplate'
 
 async function main () {
   const adapter = mustHave(await navigator.gpu.requestAdapter())
@@ -156,7 +156,34 @@ fn matrixMult(
     },
   } as const
 
-  const ui = createUIBoilerPlate(kernels)
+  const ui = makeBench({
+    header: `Single precision matrix multiply demo.
+This measures the number of flops required to multiply two NxN matrices together across various values of N.
+The matrix size (N) must be a multiple of 32.`,
+    inputs: {
+      startN: {
+        label: 'Start N',
+        props: { type: 'number', min: '32', max: '2048', step: '32', value: '32' },
+        value: (x) => +x
+      },
+      endN: {
+        label: 'End N',
+        props: { type: 'number', min: '32', max: '2048', step: '32', value: '1024' },
+        value: (x) => +x
+      },
+      stepN: {
+        label: 'Step N',
+        props: { type: 'number', min: '32', max: '2048', step: '32', value: '64' },
+        value: (x) => +x
+      },
+      iter: {
+        label: 'Iterations per step',
+        props: { type: 'number', min: '1', max: '100', step: '1', value: '10' },
+        value: (x) => +x
+      }
+    },
+    kernels,
+  } as const)
 
   function randMatrix (m:number, n:number) {
     const A = new Float32Array(m * n)
@@ -167,7 +194,7 @@ fn matrixMult(
   }
 
   while (true) {
-    const {startN, endN, stepN, iter, kernel} = await ui.go()
+    const {inputs:{startN, endN, stepN, iter}, kernel} = await ui.go()
 
     ui.clear()
     ui.log(`Benchmarking ${kernel} from n = ${startN} to ${endN} (step = ${stepN}) ${iter}/step....`)
@@ -194,117 +221,3 @@ fn matrixMult(
 }
 
 main().catch(err => console.error(err))
-
-// boring ui code for completeness, do not pay attention to it....
-function createUIBoilerPlate<KernelT extends {}> (kernels:KernelT) {
-  const formContainer = document.createElement('div')
-  Object.assign(formContainer.style, {
-    padding: '32px',
-    margin: '32px'
-  })
-
-  function uiInput (spec:{
-    label:string,
-    min:number,
-    max:number,
-    step:number,
-    value:number
-  }) {
-    const container = document.createElement('div')
-    Object.assign(container.style, {
-      padding: '2px'
-    })
-    const input = document.createElement('input')
-    const id = 'input-' + Math.random()
-    input.id = id
-    input.type = 'number'
-    input.min = spec.min + ''
-    input.max = spec.max + ''
-    input.step = spec.step + ''
-    input.value = spec.value + ''
-    const label = document.createElement('label')
-    label.htmlFor = id
-    label.innerText = spec.label
-    container.appendChild(label)
-    container.appendChild(input)
-    formContainer.appendChild(container)
-    return {
-      value: () => (Math.floor(+input.value / spec.step) * spec.step) >>> 0
-    }
-  }
-
-  const textNode = document.createElement('div')
-  textNode.innerText = `Single precision matrix multiply demo.
-This measures the number of flops required to multiply two NxN matrices together across various values of N.
-The matrix size (N) must be a multiple of 32.`
-  formContainer.appendChild(textNode)
-
-  const startN = uiInput({ label: 'Min N', min: 32, max: 2048, step: 32, value: 32 })
-  const endN = uiInput({ label: 'Max N', min: 32, max: 2048, step: 32, value: 1024 })
-  const stepN = uiInput({ label: 'Step N', min: 32, max: 2048, step: 32, value: 128 })
-  const iterCount = uiInput({ label: 'Iterations per step', min: 1, max: 100, step: 1, value: 10 })
-
-  const selectContainer = document.createElement('div')
-  Object.assign(selectContainer.style, {
-    padding: '1px'
-  })
-  const kernelSelect = document.createElement('select')
-  for (const k of Object.keys(kernels)) {
-    const opt = document.createElement('option')
-    opt.value = opt.text = k
-    kernelSelect.appendChild(opt)
-  }
-  const selectLabel = document.createElement('label')
-  selectLabel.innerText = 'Kernel: '
-  selectLabel.htmlFor = kernelSelect.id = 'kernel-select'
-  selectContainer.appendChild(selectLabel)
-  selectContainer.appendChild(kernelSelect)
-  formContainer.appendChild(selectContainer)
-
-  const goButton = document.createElement('input')
-  goButton.type = 'button'
-  goButton.value = 'Go!'
-  formContainer.appendChild(goButton)
-
-  const logPre = document.createElement('pre')
-  formContainer.appendChild(logPre)
-
-  document.body.appendChild(formContainer)
-  
-  return {
-    sleep (ms:number) {
-      return new Promise<void>((resolve) => {
-        setTimeout(resolve, ms)
-      })
-    },
-
-    clear() {
-      logPre.innerText = ''
-    },
-
-    log (line:string) {
-      logPre.innerText += line + '\n'
-    },
-
-    go () {
-      return new Promise<{
-        startN: number
-        endN: number
-        stepN: number
-        iter: number,
-        kernel: keyof KernelT,
-      }>((resolve) => {
-        function handler () {
-          resolve({
-            startN: startN.value(),
-            endN: endN.value(),
-            stepN: stepN.value(),
-            iter: iterCount.value(),
-            kernel: kernelSelect.value as any,
-          })
-        }
-        goButton.addEventListener('click', handler)
-      })
-    }
-  }
-}
