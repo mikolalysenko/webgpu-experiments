@@ -1,5 +1,8 @@
 import { makeBench, mustHave } from '../boilerplate'
 
+const BLOCK_SHIFT = 3
+const BLOCK_SIZE = 1 << BLOCK_SHIFT
+
 async function main () {
   const adapter = mustHave(await navigator.gpu.requestAdapter())
   const device = await adapter.requestDevice()
@@ -20,21 +23,21 @@ struct MatrixParams {
 @binding(2) @group(0) var<storage, read> bCoeffs : array<vec4<f32>>;
 @binding(3) @group(0) var<storage, read_write> cCoeffs : array<vec4<f32>>;
 
-var<workgroup> aBlock : array<array<mat4x4<f32>, 8>, 8>;
-var<workgroup> bBlock : array<array<mat4x4<f32>, 8>, 8>;
+var<workgroup> aBlock : array<array<mat4x4<f32>, ${BLOCK_SIZE}>, ${BLOCK_SIZE}>;
+var<workgroup> bBlock : array<array<mat4x4<f32>, ${BLOCK_SIZE}>, ${BLOCK_SIZE}>;
 
-@compute @workgroup_size(8, 8, 1)
+@compute @workgroup_size(${BLOCK_SIZE}, ${BLOCK_SIZE}, 1)
 fn matrixMult(
   @builtin(workgroup_id) groupId : vec3<u32>,
   @builtin(local_invocation_id) localId : vec3<u32>) {
   var M = params.M;
   var N = params.N;
   var K = params.K;
-  var Q = 32u * groupId.xy + 4u * localId.xy;
+  var Q = (groupId.xy << ${BLOCK_SHIFT}u) + (localId.xy << 2u);
   var ii = localId.x;
   var jj = localId.y;
   var out = mat4x4<f32>();
-  for (var k = 0u; k < K; k = k + 32u) {
+  for (var k = 0u; k < K; k = k + ${BLOCK_SIZE * 4}u) {
     for (var r = 0u; r < 4u; r = r + 1u) {
       aBlock[ii][jj][r] = aCoeffs[(K * (Q.x + r) + 4u * jj + k) >> 2];
       bBlock[ii][jj][r] = bCoeffs[(N * (4u * ii + k + r) + Q.y) >> 2];
@@ -119,7 +122,7 @@ fn matrixMult(
           const passEncoder = commandEncoder.beginComputePass()
           passEncoder.setPipeline(multiplyPipeline)
           passEncoder.setBindGroup(0, bindGroup)
-          passEncoder.dispatchWorkgroups(n / 32, m / 32, 1)
+          passEncoder.dispatchWorkgroups(n / (BLOCK_SIZE * 4), m / (BLOCK_SIZE * 4), 1)
           passEncoder.end()
           commandEncoder.copyBufferToBuffer(Cbuffer, 0, CReadCopy, 0, 4 * n * m)
           device.queue.submit([commandEncoder.finish()])
@@ -159,21 +162,21 @@ fn matrixMult(
   const ui = makeBench({
     header: `Single precision matrix multiply demo.
 This measures the number of flops required to multiply two NxN matrices together across various values of N.
-The matrix size (N) must be a multiple of 32.`,
+The matrix size (N) must be a multiple of ${BLOCK_SIZE * 4}.`,
     inputs: {
       startN: {
         label: 'Start N',
-        props: { type: 'number', min: '32', max: '2048', step: '32', value: '32' },
+        props: { type: 'number', min: '' + (BLOCK_SIZE * 4), max: '2048', step: '' + (BLOCK_SIZE * 4), value: '' + (BLOCK_SIZE * 4) },
         value: (x) => +x
       },
       endN: {
         label: 'End N',
-        props: { type: 'number', min: '32', max: '2048', step: '32', value: '1024' },
+        props: { type: 'number', min: '' + (BLOCK_SIZE * 4), max: '2048', step: '' + (BLOCK_SIZE * 4), value: '1024' },
         value: (x) => +x
       },
       stepN: {
         label: 'Step N',
-        props: { type: 'number', min: '32', max: '2048', step: '32', value: '64' },
+        props: { type: 'number', min: '' + (BLOCK_SIZE * 4), max: '2048', step: '' + (BLOCK_SIZE * 4), value: '64' },
         value: (x) => +x
       },
       iter: {
@@ -211,8 +214,8 @@ The matrix size (N) must be a multiple of 32.`,
       }
       const tElapsed = performance.now() - tStart
 
-      const work = iter * Math.pow(n, 3)
-      ui.log(`${n}x${n}: ${work / tElapsed} FLOPs (${tElapsed} ms)`)
+      const work = 2 * iter * Math.pow(n, 3)
+      ui.log(`${n}x${n}: ${((1000 * work / tElapsed) / 1e9).toFixed(3)} GFLOPs (avg ${tElapsed/iter} ms)`)
       await alg.free()
 
       await ui.sleep(16)
