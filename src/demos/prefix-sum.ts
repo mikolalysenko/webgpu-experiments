@@ -7,6 +7,7 @@ const THREADS_PER_GROUP = THREADS_PER_GROUP_X * THREADS_PER_GROUP_Y * THREADS_PE
 const ITEMS_PER_THREAD = 256
 const ITEMS_PER_GROUP = ITEMS_PER_THREAD * THREADS_PER_GROUP
 
+// used bank conflict resolution, does not seem to make any difference on rtx4090
 const LOG_NUM_BANKS = 5
 
 async function main () {
