@@ -33,7 +33,7 @@ fn matrixMult(
   var M = params.M;
   var N = params.N;
   var K = params.K;
-  var Q = (groupId.xy << ${BLOCK_SHIFT}u) + (localId.xy << 2u);
+  var Q = (groupId.xy * ${BLOCK_SIZE}u) + (localId.xy * 4u);
   var ii = localId.x;
   var jj = localId.y;
   var out = mat4x4<f32>();

@@ -1,5 +1,11 @@
 # Project log
 
+## 02-05-2023
+
+* Picking this project back up again.  A bit behind schedule this weekend due to building a new PC taking a bit longer than expected.  System is set up and stable now.
+* Changed the GFLOPs calculation in the matrix multiply demo
+* Tried changing around the matrix multiply code, I'm pretty sure bank conflicts are causing some performance loss but was taking too much time to figure out the correct index arithmetic to solve the problem.
+
 ## 01-23-2023
 
 * Started working on a really terrible, not-very-parllel, non-work efficient prefix sum.

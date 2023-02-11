@@ -9,7 +9,8 @@
     "build": "npm run build:html && npm run build:js",
     "gh-pages": "npm run build && git branch -D gh-pages && git checkout --orphan gh-pages && mv dist/* . && rm -rf node_modules/ src/ package.json package-lock.json README.md tsconfig.json LOG.md && git add . && git commit -m '.' && git push --force -u origin gh-pages && git checkout master",
     "watch:js": "esbuild --sourcemap --bundle ./src/demos/* --outdir=dist/ --watch --servedir=dist",
-    "watch": "npm run build:html && npm run watch:js"
+    "watch": "npm run build:html && npm run watch:js",
+    "chrome": "google-chrome --enable-unsafe-webgpu "
   },
   "repository": {
     "type": "git",
