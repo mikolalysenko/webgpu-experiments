@@ -1,5 +1,10 @@
 # Project log
 
+## 02-11-2023
+
+* Tried optimizing prefix sum a bit using a work efficient scan and adding Harris et al.'s bank conflict avoidance trick.  Didn't observe much benefit, its likely that the overhead of dispatching from webgpu/js is the dominant factor.
+* It may be possible that using render bundles can further improve performance, but at this point it should be good enough as a foundation for particle collision detection.
+
 ## 02-05-2023
 
 * Picking this project back up again.  A bit behind schedule this weekend due to building a new PC taking a bit longer than expected.  System is set up and stable now.
