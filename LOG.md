@@ -1,5 +1,15 @@
 # Project log
 
+## 02-20-2023
+
+## 02-19-2023
+
+* Implemented SDF impostor rendering and set up a basic framework for integrating and accumulating/applying Jacobi corrections to particles.  Next step is adding collision detection.
+
+## 02-18-2023
+
+* Started building an SDF based rigid body physics simulator.  Will be using XPBD for the objects and the scan stuff I've already put together for the dynamics.  I still haven't decided how I'm going to handle contact resolution, since Gauss-Seidel isn't too easy to parallelize.  If I can't figure out an easy way to implement it using atomics/locks or some kind of ad-hoc graph coloring, then I'll probably just skip it and do Jacobi based resolution.  Hope that will be fine for a demo....
+
 ## 02-11-2023
 
 * Tried optimizing prefix sum a bit using a work efficient scan and adding Harris et al.'s bank conflict avoidance trick.  Didn't observe much benefit, its likely that the overhead of dispatching from webgpu/js is the dominant factor.
