@@ -218,7 +218,7 @@ fn fragMain(
 
   const species = PARTICLE_COLORS.map((color, index) => {
     const renderUniformBuffer = device.createBuffer({
-      size: 4 * 6,
+      size: 1024,
       usage: GPUBufferUsage.UNIFORM,
       mappedAtCreation: true
     })

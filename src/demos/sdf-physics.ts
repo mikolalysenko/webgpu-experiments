@@ -35,7 +35,7 @@ const SUBSTEPS = 10
 const SUB_DT = DT / SUBSTEPS
 const JACOBI_POS = 0.25
 const JACOBI_ROT = 0.25
-const GRAVITY = -1
+const GRAVITY = 0.1
 
 const COMMON_SHADER_FUNCS = `
 fn rigidMotion (q:vec4<f32>, v:vec4<f32>) -> mat4x4<f32> {
@@ -350,10 +350,8 @@ fn fragMain(
   })
 
   const particlePredictShader = device.createShaderModule({
-    label: 'particlePhysics',
+    label: 'particlePredict',
     code: `
-${COMMON_SHADER_FUNCS}
-
 @binding(0) @group(0) var<storage, read> position : array<vec4<f32>>;
 @binding(1) @group(0) var<storage, read> velocity : array<vec4<f32>>;
 @binding(2) @group(0) var<storage, read_write> predictedPosition : array<vec4<f32>>;
@@ -364,27 +362,53 @@ ${COMMON_SHADER_FUNCS}
 @binding(6) @group(0) var<storage, read_write> predictedRotation : array<vec4<f32>>;
 @binding(7) @group(0) var<storage, read_write> rotationUpdate : array<vec4<f32>>;
 
+fn quatMat (q:vec4<f32>) -> mat3x3<f32> {
+  var q2 = q.xyz + q.xyz;
+
+  var xx = q.x * q2.x;
+  var xy = q.x * q2.y;
+  var xz = q.x * q2.z;
+  var yy = q.y * q2.y;
+  var yz = q.y * q2.z;
+  var zz = q.z * q2.z;
+  var wx = q.w * q2.x;
+  var wy = q.w * q2.y;
+  var wz = q.w * q2.z;
+
+  return mat3x3<f32>(
+    1. - (yy + zz),
+    xy + wz,
+    xz - wy,
+
+    xy - wz,
+    1. - (xx + zz),
+    yz + wx,
+
+    xz + wy,
+    yz - wx,
+    1. - (xx + yy),
+  );
+}
+
 @compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn predictPositions (@builtin(global_invocation_id) globalVec : vec3<u32>) {
   var id = globalVec.x;
 
   var v = velocity[id];
-  v.y = v.y - ${GRAVITY * SUB_DT};
-  predictedPosition[id] = position[id] + v * ${SUB_DT};
-  positionUpdate[id] = vec4(0.);
+  v.y = v.y - ${(GRAVITY * SUB_DT).toFixed(3)};
+  predictedPosition[id] = position[id] + v * ${SUB_DT.toFixed(3)};
+  positionUpdate[id] = vec4<f32>(0.);
 
   var q = rotation[id];
   var omega = angVelocity[id];
-  var R = rigidMotion(q, vec4<f32>(0.));
-  predictedRotation[id] = normalize(q + ${0.5 * SUB_DT} * (R * omega));
-  rotationUpdate[id] = vec4(0.);
+  var R = quatMat(q);
+  predictedRotation[id] = normalize(q + vec4(${0.5 * SUB_DT} * (R * omega.xyz), 0.));
+  rotationUpdate[id] = vec4<f32>(0.);
 }`
   })
 
   const particleUpdateShader = device.createShaderModule({
     label: 'particleUpdate',
     code: `
-${COMMON_SHADER_FUNCS}
-
 @binding(0) @group(0) var<storage, read_write> position : array<vec4<f32>>;
 @binding(1) @group(0) var<storage, read_write> velocity : array<vec4<f32>>;
 @binding(2) @group(0) var<storage, read> predictedPosition : array<vec4<f32>>;
@@ -395,18 +419,32 @@ ${COMMON_SHADER_FUNCS}
 @binding(6) @group(0) var<storage, read> predictedRotation : array<vec4<f32>>;
 @binding(7) @group(0) var<storage, read> rotationUpdate : array<vec4<f32>>;
 
+fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(
+    a.x * b.w + a.w * b.x + a.y * b.z - a.z * b.y,
+    a.y * b.w + a.w * b.y + a.z * b.x - a.x * b.z,
+    a.z * b.w + a.w * b.z + a.x * b.y - a.y * b.x,
+    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+  );
+}
+
 @compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn updatePositions (@builtin(global_invocation_id) globalVec : vec3<u32>) {
   var id = globalVec.x;
 
   var p = position[id];
-  var prevPos = p.xyz;
+  var prevPosition = p.xyz;
   var nextPosition = predictedPosition[id].xyz + ${JACOBI_POS} * positionUpdate[id].xyz;
-  velocity[id] = vec4((nextPosition - prevPosition) * ${1 / SUB_DT}, 0.);
+  velocity[id] = vec4((nextPosition - prevPosition) * ${(1 / SUB_DT).toFixed(3)}, 0.);
   position[id] = vec4(nextPosition, p.w);
 
   var prevQ = rotation[id];
   var nextQ = normalize(predictedRotation[id] + ${JACOBI_ROT} * rotationUpdate[id]);
-
+  var dQ = ${(2 / SUB_DT).toFixed(3)} * qMultiply(nextQ, vec4(-prevQ.xyz, prevQ.w));
+  if dQ.w < 0. {
+    angVelocity[id] = vec4(-dQ.xyz, 0.);
+  } else {
+    angVelocity[id] = vec4(dQ.xyz, 0.);
+  }
   rotation[id] = nextQ;
 }
 `
@@ -434,48 +472,66 @@ ${COMMON_SHADER_FUNCS}
     label: 'particleVelocity',
     size: 4 * 4 * NUM_PARTICLES,
     usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
   })
   const particleAngularVelocityBuffer = device.createBuffer({
     label: 'particleAngularVelocity',
     size: 4 * 4 * NUM_PARTICLES,
-    usage: GPUBufferUsage.STORAGE
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
   })
   const particlePositionPredictionBuffer = device.createBuffer({
     label: 'particlePositionPrediction',
     size: 4 * 4 * NUM_PARTICLES,
-    usage: GPUBufferUsage.STORAGE
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
   })
   const particlePositionCorrectionBuffer = device.createBuffer({
     label: 'particlePositionCorrection',
     size: 4 * 4 * NUM_PARTICLES,
-    usage: GPUBufferUsage.STORAGE
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
   })
   const particleRotationPredictionBuffer = device.createBuffer({
     label: 'particleRotationPrediction',
     size: 4 * 4 * NUM_PARTICLES,
-    usage: GPUBufferUsage.STORAGE
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
   })
   const particleRotationCorrectionBuffer = device.createBuffer({
     label: 'particleRotationCorrection',
     size: 4 * 4 * NUM_PARTICLES,
-    usage: GPUBufferUsage.STORAGE
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
   })
-  const particlePositionData = new Float32Array(particlePositionBuffer.getMappedRange())
-  const particleRotationData = new Float32Array(particleRotationBuffer.getMappedRange())
-  const particleColorData = new Float32Array(particleColorBuffer.getMappedRange())
-  for (let i = 0; i < NUM_PARTICLES; ++i) {
-    const color = PALETTE[1 + (i % (PALETTE.length - 1))]
-    for (let j = 0; j < 4; ++j) {
-      particlePositionData[4 * i + j] = 2 * Math.random() - 1
-      particleColorData[4 * i + j] = color[j]
-      particleRotationData[4 *i + j] = Math.random() - 0.5
+  {
+    const particlePositionData = new Float32Array(particlePositionBuffer.getMappedRange())
+    const particleRotationData = new Float32Array(particleRotationBuffer.getMappedRange())
+    const particleColorData = new Float32Array(particleColorBuffer.getMappedRange())
+    const particleVelocityData = new Float32Array(particleVelocityBuffer.getMappedRange())
+    const particleAngularVelocityData = new Float32Array(particleAngularVelocityBuffer.getMappedRange())
+    for (let i = 0; i < NUM_PARTICLES; ++i) {
+      const color = PALETTE[1 + (i % (PALETTE.length - 1))]
+      for (let j = 0; j < 4; ++j) {
+        particlePositionData[4 * i + j] = 2 * Math.random() - 1
+        particleColorData[4 * i + j] = color[j]
+        particleRotationData[4 *i + j] = Math.random() - 0.5
+        particleVelocityData[4 * i + j] = 0
+        particleAngularVelocityData[4 * i + j] = 0
+      }
+      const q = particleRotationData.subarray(4 * i, 4 * (i + 1))
+      quat.normalize(q, q)
     }
-    const q = particleRotationData.subarray(4 * i, 4 * (i + 1))
-    quat.normalize(q, q)
   }
   particlePositionBuffer.unmap()
   particleRotationBuffer.unmap()
   particleColorBuffer.unmap()
+  particleVelocityBuffer.unmap()
+  particleAngularVelocityBuffer.unmap()
+  particlePositionPredictionBuffer.unmap()
+  particlePositionCorrectionBuffer.unmap()
+  particleRotationPredictionBuffer.unmap()
+  particleRotationCorrectionBuffer.unmap()
 
   const spriteQuadUV = device.createBuffer({
     size: 2 * 4 * 4,
@@ -549,44 +605,6 @@ ${COMMON_SHADER_FUNCS}
   const renderUniformBuffer = device.createBuffer({
     size: renderUniformData.byteLength,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-  })
-
-  const renderUniformBindGroup = device.createBindGroup({
-    label: 'uniformBindGroup',
-    layout: renderUniformBindGroupLayout,
-    entries: [
-      {
-        binding: 0,
-        resource: {
-          buffer: renderUniformBuffer,
-        }
-      }
-    ]
-  })
-
-  const renderParticleBindGroup = device.createBindGroup({
-    label: 'renderParticleBindGroup',
-    layout: renderParticleBindGroupLayout,
-    entries: [
-      {
-        binding: 0,
-        resource: {
-          buffer: particlePositionBuffer
-        }
-      },
-      {
-        binding: 1,
-        resource: {
-          buffer: particleRotationBuffer
-        }
-      },
-      {
-        binding: 2,
-        resource: {
-          buffer: particleColorBuffer
-        }
-      }
-    ]
   })
 
   const renderParticlePipeline = device.createRenderPipeline({
@@ -669,7 +687,17 @@ ${COMMON_SHADER_FUNCS}
     }
   })
 
+  const updatePipeline = device.createComputePipeline({
+    label: 'particleUpdatePipeline',
+    layout: 'auto',
+    compute: {
+      module: particleUpdateShader,
+      entryPoint: 'updatePositions'
+    }
+  })
+
   const predictBindGroup = device.createBindGroup({
+    label: 'predictBindGroup',
     layout: predictPipeline.getBindGroupLayout(0),
     entries: [
       particlePositionBuffer,
@@ -688,16 +716,8 @@ ${COMMON_SHADER_FUNCS}
     })
   } as const)
 
-  const updatePipeline = device.createComputePipeline({
-    label: 'particleUpdatePipeline',
-    layout: 'auto',
-    compute: {
-      module: particleUpdateShader,
-      entryPoint: 'updatePositions'
-    }
-  })
-
   const updateBindGroup = device.createBindGroup({
+    label: 'updatePositionBindGroup',
     layout: updatePipeline.getBindGroupLayout(0),
     entries: [
       particlePositionBuffer,
@@ -715,6 +735,44 @@ ${COMMON_SHADER_FUNCS}
       }
     })
   } as const)
+
+  const renderUniformBindGroup = device.createBindGroup({
+    label: 'uniformBindGroup',
+    layout: renderUniformBindGroupLayout,
+    entries: [
+      {
+        binding: 0,
+        resource: {
+          buffer: renderUniformBuffer,
+        }
+      }
+    ]
+  })
+
+  const renderParticleBindGroup = device.createBindGroup({
+    label: 'renderParticleBindGroup',
+    layout: renderParticleBindGroupLayout,
+    entries: [
+      {
+        binding: 0,
+        resource: {
+          buffer: particlePositionBuffer
+        }
+      },
+      {
+        binding: 1,
+        resource: {
+          buffer: particleRotationBuffer
+        }
+      },
+      {
+        binding: 2,
+        resource: {
+          buffer: particleColorBuffer
+        }
+      }
+    ]
+  })
     
   function frame (tick:number) {
     mat4.perspective(projection, Math.PI / 4, canvas.width / canvas.height, 0.01, 50)
@@ -756,19 +814,19 @@ ${COMMON_SHADER_FUNCS}
 
     passEncoder.end()
 
-    // const computePass = commandEncoder.beginComputePass()
-    // for (let i = 0; i < SUBSTEPS; ++i) {
-    //   computePass.setBindGroup(0, predictBindGroup)
-    //   computePass.setPipeline(predictPipeline)
-    //   computePass.dispatchWorkgroups(NUM_PARTICLES / PARTICLE_WORKGROUP_SIZE)
+    const computePass = commandEncoder.beginComputePass()
+    for (let i = 0; i < SUBSTEPS; ++i) {
+      computePass.setBindGroup(0, predictBindGroup)
+      computePass.setPipeline(predictPipeline)
+      computePass.dispatchWorkgroups(NUM_PARTICLES / PARTICLE_WORKGROUP_SIZE)
 
-    //   // solve constraints
+      // solve constraints
 
-    //   computePass.setBindGroup(0, updateBindGroup)
-    //   computePass.setPipeline(updatePipeline)
-    //   computePass.dispatchWorkgroups(NUM_PARTICLES / PARTICLE_WORKGROUP_SIZE)
-    // }
-    // computePass.end()
+      computePass.setBindGroup(0, updateBindGroup)
+      computePass.setPipeline(updatePipeline)
+      computePass.dispatchWorkgroups(NUM_PARTICLES / PARTICLE_WORKGROUP_SIZE)
+    }
+    computePass.end()
 
     device.queue.submit([commandEncoder.finish()])
     requestAnimationFrame(frame)

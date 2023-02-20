@@ -176,7 +176,7 @@ fn fragMain(
   } as const)
 
   const uniformBuffer = device.createBuffer({
-    size: 4 * (3 * 16 + 4 + 1),
+    size: 1024,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
   })
 
