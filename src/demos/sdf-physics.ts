@@ -10,7 +10,7 @@ const PALETTE = [
   [ 0.9686274509803922, 0.596078431372549, 0.1411764705882353, 1 ]
 ]
 
-const SWEEP_RADIUS = 0.02
+const SWEEP_RADIUS = 0.03
 const DONUT_RADIUS = 0.07
 const PARTICLE_RADIUS =  SWEEP_RADIUS + DONUT_RADIUS
 
@@ -44,9 +44,9 @@ const MAX_BUCKET_SIZE = 16
 const GRID_SPACING = 2 * PARTICLE_RADIUS
 const COLLISION_TABLE_SIZE = NUM_PARTICLES
 const HASH_VEC = [
-  753586397,
-  444332041,
-  182285801
+  1,
+  Math.ceil(Math.pow(COLLISION_TABLE_SIZE, 1 / 3)),
+  Math.ceil(Math.pow(COLLISION_TABLE_SIZE, 2 / 3))
 ]
 const CONTACTS_PER_PARTICLE = 16
 const CONTACT_TABLE_SIZE = CONTACTS_PER_PARTICLE * NUM_PARTICLES
@@ -105,12 +105,12 @@ fn terrainSDF (p : vec3<f32>) -> f32 {
 }
 
 fn bucketHash (p:vec3<i32>) -> u32 {
-  var h = (u32(p.x) * ${HASH_VEC[0]}u) + (u32(p.y) * ${HASH_VEC[1]}u) + (u32(p.z) * ${HASH_VEC[2]}u);
-  // if h < 0 {
-  //   return ${COLLISION_TABLE_SIZE}u - (-h % ${COLLISION_TABLE_SIZE}u);
-  // } else {
-    return h % ${COLLISION_TABLE_SIZE}u;
-  // }
+  var h = (p.x * ${HASH_VEC[0]}) + (p.y * ${HASH_VEC[1]}) + (p.z * ${HASH_VEC[2]});
+  if h < 0 {
+    return ${COLLISION_TABLE_SIZE}u - (u32(-h) % ${COLLISION_TABLE_SIZE}u);
+  } else {
+    return u32(h) % ${COLLISION_TABLE_SIZE}u;
+  }
 }
 
 fn particleBucket (p:vec3<f32>) -> vec3<i32> {
@@ -297,7 +297,7 @@ fn vertMain(
   result.model3 = sdfMat[3];
   
   var viewCenter = uniforms.view * sdfMat[3];
-  var rayDirection = viewCenter + vec4(${RADIUS_PADDING * PARTICLE_RADIUS} * uv.x, ${RADIUS_PADDING * PARTICLE_RADIUS} * uv.y, -${PARTICLE_RADIUS}, 0.);
+  var rayDirection = viewCenter + vec4(${RADIUS_PADDING * PARTICLE_RADIUS} * uv.x, ${RADIUS_PADDING * PARTICLE_RADIUS} * uv.y, 0., 0.);
   result.clipPosition = uniforms.proj * rayDirection;
 
   var invRot = upper3x3(sdfMat);
@@ -354,9 +354,9 @@ fn fragMain(
 ) -> FragmentOutput {
   var result : FragmentOutput;
   
-  var tmin = length(rayDirectionInterp);
-  var rayDirection = rayDirectionInterp / tmin;
-  var rayDist = traceRay(rayOrigin, rayDirection, 0.5 * tmin, tmin + ${2. * RADIUS_PADDING * PARTICLE_RADIUS});
+  var tmid = length(rayDirectionInterp);
+  var rayDirection = rayDirectionInterp / tmid;
+  var rayDist = traceRay(rayOrigin, rayDirection, tmid - ${RADIUS_PADDING * PARTICLE_RADIUS}, tmid + ${RADIUS_PADDING * PARTICLE_RADIUS});
   if rayDist < 0. {
     discard;
   }
@@ -565,8 +565,8 @@ fn readBucketNeighborhood (centerId:u32) -> array<array<array<BucketContents, 2>
       for (var k = 0; k < 2; k = k + 1) {
         var bucketId = (centerId + bucketHash(vec3<i32>(i, j, k))) % ${COLLISION_TABLE_SIZE}u;
         var bucketStart = hashCounts[bucketId];
-        var bucketEnd = ${COLLISION_TABLE_SIZE}u;
-        if bucketId < ${COLLISION_TABLE_SIZE} {
+        var bucketEnd = ${NUM_PARTICLES}u;
+        if bucketId < ${COLLISION_TABLE_SIZE - 1} {
           bucketEnd = hashCounts[bucketId + 1];
         }
         result[i][j][k].count = min(bucketEnd - bucketStart, ${MAX_BUCKET_SIZE}u);
@@ -593,7 +593,7 @@ fn readBucketNeighborhood (centerId:u32) -> array<array<array<BucketContents, 2>
 
 fn testOverlap (a:vec3<f32>, b:vec3<f32>) -> f32 {
   var d = a - b;
-  return dot(d, d) - ${PARTICLE_RADIUS * PARTICLE_RADIUS};
+  return dot(d, d) - ${4 * PARTICLE_RADIUS * PARTICLE_RADIUS};
 }
 `
 
@@ -619,7 +619,7 @@ fn countBucketContacts (a:BucketContents, b:BucketContents) -> u32 {
       if (j >= b.count) {
         break;
       }
-      if (testOverlap(a.xyz[i], b.xyz[j]) < 0.) {
+      if (testOverlap(a.xyz[i], b.xyz[j]) <= 0.) {
         count = count + 1u;
       }
     }
@@ -634,7 +634,7 @@ fn countCenterContacts (a:BucketContents) -> u32 {
       break;
     }
     for (var j = 0u; j < i; j = j + 1u) {
-      if (testOverlap(a.xyz[i], a.xyz[j]) < 0.) {
+      if (testOverlap(a.xyz[i], a.xyz[j]) <= 0.) {
         count = count + 1u;
       }
     }
@@ -685,7 +685,7 @@ fn emitBucketContacts (a:BucketContents, b:BucketContents, offset:u32) -> u32 {
       if (j >= b.count) {
         break;
       }
-      if (testOverlap(a.xyz[i], b.xyz[j]) < 0.) {
+      if (testOverlap(a.xyz[i], b.xyz[j]) <= 0.) {
         contactList[shift] = vec2<i32>(a.ids[i], b.ids[j]);
         shift = shift + 1u;
         if (shift >= ${CONTACT_TABLE_SIZE}u) {
@@ -707,7 +707,7 @@ fn emitCenterContacts (a:BucketContents, offset:u32) -> u32 {
       break;
     }
     for (var j = 0u; j < i; j = j + 1u) {
-      if (testOverlap(a.xyz[i], a.xyz[j]) < 0.) {
+      if (testOverlap(a.xyz[i], a.xyz[j]) <= 0.) {
         contactList[shift] = vec2<i32>(a.ids[i], a.ids[j]);
         shift = shift + 1u;
         if (shift >= ${CONTACT_TABLE_SIZE}u) {
@@ -741,7 +741,7 @@ fn emitCenterContacts (a:BucketContents, offset:u32) -> u32 {
     }
   })
 
-  const renderContactShader = device.createShaderModule({
+  const debugContactShader = device.createShaderModule({
     label: 'renderContactShader',
     code: `
 struct Uniforms {
@@ -859,7 +859,10 @@ struct Uniforms {
     for (let i = 0; i < NUM_PARTICLES; ++i) {
       const color = PALETTE[1 + (i % (PALETTE.length - 1))]
       for (let j = 0; j < 4; ++j) {
-        particlePositionData[4 * i + j] = 1.5 * (2 * Math.random() - 1)
+        particlePositionData[4 * i + j] = 10.5 * (2 * Math.random() - 1) // + 100
+        // if (j == 1) {
+        //   particlePositionData[4 * i + j] = 0
+        // }
         particleColorData[4 * i + j] = color[j]
         particleRotationData[4 *i + j] = Math.random() - 0.5
         particleVelocityData[4 * i + j] = 0
@@ -868,6 +871,12 @@ struct Uniforms {
       const q = particleRotationData.subarray(4 * i, 4 * (i + 1))
       quat.normalize(q, q)
     }
+
+    // particlePositionData[0] = particlePositionData[1] = particlePositionData[2] = 0.01
+
+    // particlePositionData[4] = 0.05
+    // particlePositionData[5] = -0.01
+    // particlePositionData[6] = -0.05
   }
   particlePositionBuffer.unmap()
   particleRotationBuffer.unmap()
@@ -1028,7 +1037,7 @@ struct Uniforms {
     ]
   } as const)
 
-  const renderContactsBindGroupLayout = device.createBindGroupLayout({
+  const debugContactsBindGroupLayout = device.createBindGroupLayout({
     label: 'renderContactsBindGroupLayout',
     entries: [{
       binding: 0,
@@ -1137,15 +1146,15 @@ struct Uniforms {
       label: 'renderContactPipelineLayout',
       bindGroupLayouts: [
         renderUniformBindGroupLayout,
-        renderContactsBindGroupLayout
+        debugContactsBindGroupLayout
       ]
     }),
     vertex: {
-      module: renderContactShader,
+      module: debugContactShader,
       entryPoint: 'vertMain',
     },
     fragment: {
-      module: renderContactShader,
+      module: debugContactShader,
       entryPoint: 'fragMain',
       targets: [{ format: presentationFormat }],
     },
@@ -1257,7 +1266,7 @@ struct Uniforms {
 
   const renderContactBindGroup = device.createBindGroup({
     label: 'renderContactBindGroup',
-    layout: renderContactsBindGroupLayout,
+    layout: debugContactsBindGroupLayout,
     entries: [
       {
         binding: 0,
