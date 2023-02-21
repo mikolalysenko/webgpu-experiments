@@ -1,6 +1,6 @@
 import { makeCanvas, mustHave } from '../boilerplate'
 import { WebGPUScan } from '../lib/scan'
-import { mat4, vec4, quat } from 'gl-matrix'
+import { mat4, mat3, vec4, quat } from 'gl-matrix'
 
 const PALETTE = [
   [ 0.19215686274509805, 0.2235294117647059, 0.23529411764705882, 1 ],
@@ -38,6 +38,10 @@ const SUB_DT = DT / SUBSTEPS
 const JACOBI_POS = 0.25
 const JACOBI_ROT = 0.25
 const GRAVITY = 0.0
+
+// assume all bodies have same inertia tensor, whatever
+const PARTICLE_INERTIA_TENSOR = mat3.identity(mat3.create())
+const PARTICLE_INV_INERTIA_TENSOR = mat3.invert(mat3.create(), PARTICLE_INERTIA_TENSOR)
 
 // collision detection parameters
 const MAX_BUCKET_SIZE = 16
@@ -379,20 +383,20 @@ fn fragMain(
 }`
   })
 
-  const particlePredictShader = device.createShaderModule({
-    label: 'particlePredict',
-    code: `
-@binding(0) @group(0) var<storage, read> position : array<vec4<f32>>;
-@binding(1) @group(0) var<storage, read> velocity : array<vec4<f32>>;
-@binding(2) @group(0) var<storage, read_write> predictedPosition : array<vec4<f32>>;
-@binding(3) @group(0) var<storage, read_write> positionUpdate : array<vec4<f32>>;
+  const PHYSICS_COMMON = `
+const inertiaTensor = mat3x3<f32>(${Array.prototype.join.call(PARTICLE_INERTIA_TENSOR)});
+const invInertiaTensor = mat3x3<f32>(${Array.prototype.join.call(PARTICLE_INV_INERTIA_TENSOR)});
 
-@binding(4) @group(0) var<storage, read> rotation : array<vec4<f32>>;
-@binding(5) @group(0) var<storage, read> angVelocity : array<vec4<f32>>;
-@binding(6) @group(0) var<storage, read_write> predictedRotation : array<vec4<f32>>;
-@binding(7) @group(0) var<storage, read_write> rotationUpdate : array<vec4<f32>>;
+fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(
+    a.x * b.w + a.w * b.x + a.y * b.z - a.z * b.y,
+    a.y * b.w + a.w * b.y + a.z * b.x - a.x * b.z,
+    a.z * b.w + a.w * b.z + a.x * b.y - a.y * b.x,
+    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+  );
+}
 
-fn quatMat (q:vec4<f32>) -> mat3x3<f32> {
+fn qMatrix (q:vec4<f32>) -> mat3x3<f32> {
   var q2 = q.xyz + q.xyz;
 
   var xx = q.x * q2.x;
@@ -419,6 +423,22 @@ fn quatMat (q:vec4<f32>) -> mat3x3<f32> {
     1. - (xx + yy),
   );
 }
+`
+
+  const particlePredictShader = device.createShaderModule({
+    label: 'particlePredict',
+    code: `
+${PHYSICS_COMMON}
+
+@binding(0) @group(0) var<storage, read> position : array<vec4<f32>>;
+@binding(1) @group(0) var<storage, read> velocity : array<vec4<f32>>;
+@binding(2) @group(0) var<storage, read_write> predictedPosition : array<vec4<f32>>;
+@binding(3) @group(0) var<storage, read_write> positionUpdate : array<vec4<f32>>;
+
+@binding(4) @group(0) var<storage, read> rotation : array<vec4<f32>>;
+@binding(5) @group(0) var<storage, read> angVelocity : array<vec4<f32>>;
+@binding(6) @group(0) var<storage, read_write> predictedRotation : array<vec4<f32>>;
+@binding(7) @group(0) var<storage, read_write> rotationUpdate : array<vec4<f32>>;
 
 @compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn predictPositions (@builtin(global_invocation_id) globalVec : vec3<u32>) {
   var id = globalVec.x;
@@ -429,9 +449,12 @@ fn quatMat (q:vec4<f32>) -> mat3x3<f32> {
   positionUpdate[id] = vec4<f32>(0.);
 
   var q = rotation[id];
-  var omega = angVelocity[id];
-  var R = quatMat(q);
-  predictedRotation[id] = normalize(q + vec4(${0.5 * SUB_DT} * (R * omega.xyz), 0.));
+  var omega = angVelocity[id].xyz;
+
+  var nextOmega = omega - ${SUB_DT} * invInertiaTensor * cross(omega, inertiaTensor * omega);
+  var nextQ = q + ${0.5 * SUB_DT} * qMultiply(vec4(omega, 0.), q);
+
+  predictedRotation[id] = normalize(nextQ);
   rotationUpdate[id] = vec4<f32>(0.);
 }`
   })
@@ -439,6 +462,8 @@ fn quatMat (q:vec4<f32>) -> mat3x3<f32> {
   const particleUpdateShader = device.createShaderModule({
     label: 'particleUpdate',
     code: `
+${PHYSICS_COMMON}
+
 @binding(0) @group(0) var<storage, read_write> position : array<vec4<f32>>;
 @binding(1) @group(0) var<storage, read_write> velocity : array<vec4<f32>>;
 @binding(2) @group(0) var<storage, read> predictedPosition : array<vec4<f32>>;
@@ -449,14 +474,6 @@ fn quatMat (q:vec4<f32>) -> mat3x3<f32> {
 @binding(6) @group(0) var<storage, read> predictedRotation : array<vec4<f32>>;
 @binding(7) @group(0) var<storage, read> rotationUpdate : array<vec4<f32>>;
 
-fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
-  return vec4<f32>(
-    a.x * b.w + a.w * b.x + a.y * b.z - a.z * b.y,
-    a.y * b.w + a.w * b.y + a.z * b.x - a.x * b.z,
-    a.z * b.w + a.w * b.z + a.x * b.y - a.y * b.x,
-    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
-  );
-}
 
 @compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn updatePositions (@builtin(global_invocation_id) globalVec : vec3<u32>) {
   var id = globalVec.x;
@@ -469,11 +486,12 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
 
   var prevQ = rotation[id];
   var nextQ = normalize(predictedRotation[id] + ${JACOBI_ROT} * rotationUpdate[id]);
-  var dQ = ${(2 / SUB_DT).toFixed(3)} * qMultiply(nextQ, vec4(-prevQ.xyz, prevQ.w));
+
+  var dQ = qMultiply(nextQ, vec4(-prevQ.xyz, prevQ.w));
   if dQ.w < 0. {
-    angVelocity[id] = vec4(-dQ.xyz, 0.);
+    angVelocity[id] = vec4(-${(2 / SUB_DT).toFixed()} * dQ.xyz, 0.);
   } else {
-    angVelocity[id] = vec4(dQ.xyz, 0.);
+    angVelocity[id] = vec4(${(2 / SUB_DT).toFixed()} * dQ.xyz, 0.);
   }
   rotation[id] = nextQ;
 }
@@ -860,13 +878,13 @@ struct Uniforms {
       const color = PALETTE[1 + (i % (PALETTE.length - 1))]
       for (let j = 0; j < 4; ++j) {
         particlePositionData[4 * i + j] = 10.5 * (2 * Math.random() - 1) // + 100
-        // if (j == 1) {
-        //   particlePositionData[4 * i + j] = 0
-        // }
+        if (j == 1) {
+          particlePositionData[4 * i + j] = 0
+        }
         particleColorData[4 * i + j] = color[j]
         particleRotationData[4 *i + j] = Math.random() - 0.5
         particleVelocityData[4 * i + j] = 0
-        particleAngularVelocityData[4 * i + j] = 0
+        particleAngularVelocityData[4 * i + j] = Math.random() - 0.5
       }
       const q = particleRotationData.subarray(4 * i, 4 * (i + 1))
       quat.normalize(q, q)
@@ -1287,7 +1305,8 @@ struct Uniforms {
   function frame (tick:number) {
     mat4.perspective(projection, Math.PI / 4, canvas.width / canvas.height, 0.01, 50)
     mat4.invert(projectionInv, projection)
-    const theta = 0.0001 * tick
+    // const theta = 0.0001 * tick
+    const theta = 0
     vec4.set(eye, 8  * Math.cos(theta), 3, 8 * Math.sin(theta), 0)
     mat4.lookAt(view, eye, [0, -0.5, 0], [0, 1, 0])
     vec4.copy(fog, PALETTE[0] as vec4)
