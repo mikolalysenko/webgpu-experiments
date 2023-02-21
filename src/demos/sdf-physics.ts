@@ -10,14 +10,16 @@ const PALETTE = [
   [ 0.9686274509803922, 0.596078431372549, 0.1411764705882353, 1 ]
 ]
 
-const SWEEP_RADIUS = 0.01
+const SWEEP_RADIUS = 0.02
 const DONUT_RADIUS = 0.07
 const PARTICLE_RADIUS =  SWEEP_RADIUS + DONUT_RADIUS
 
 const SCAN_THREADS = 256
 const SCAN_ITEMS = 4
-const PARTICLE_WORKGROUP_SIZE = 256
-const NUM_PARTICLES = 256
+const NUM_PARTICLE_BLOCKS = 1
+const NUM_PARTICLES = NUM_PARTICLE_BLOCKS * SCAN_THREADS * SCAN_ITEMS
+
+const PARTICLE_WORKGROUP_SIZE = SCAN_THREADS
 
 // rendering performance parameters
 const RAY_STEPS = 32
@@ -35,7 +37,19 @@ const SUBSTEPS = 10
 const SUB_DT = DT / SUBSTEPS
 const JACOBI_POS = 0.25
 const JACOBI_ROT = 0.25
-const GRAVITY = 0.1
+const GRAVITY = 0.0
+
+// collision detection parameters
+const MAX_BUCKET_SIZE = 16
+const GRID_SPACING = 2 * PARTICLE_RADIUS
+const COLLISION_TABLE_SIZE = NUM_PARTICLES
+const HASH_VEC = [
+  753586397,
+  444332041,
+  182285801
+]
+const CONTACTS_PER_PARTICLE = 16
+const CONTACT_TABLE_SIZE = CONTACTS_PER_PARTICLE * NUM_PARTICLES
 
 const COMMON_SHADER_FUNCS = `
 fn rigidMotion (q:vec4<f32>, v:vec4<f32>) -> mat4x4<f32> {
@@ -89,8 +103,24 @@ fn particleSDF (p : vec3<f32>) -> f32 {
 fn terrainSDF (p : vec3<f32>) -> f32 {
   return max(p.y + 1., 3. - distance(p, vec3(0., -1, 0.)));
 }
-`
 
+fn bucketHash (p:vec3<i32>) -> u32 {
+  var h = (u32(p.x) * ${HASH_VEC[0]}u) + (u32(p.y) * ${HASH_VEC[1]}u) + (u32(p.z) * ${HASH_VEC[2]}u);
+  // if h < 0 {
+  //   return ${COLLISION_TABLE_SIZE}u - (-h % ${COLLISION_TABLE_SIZE}u);
+  // } else {
+    return h % ${COLLISION_TABLE_SIZE}u;
+  // }
+}
+
+fn particleBucket (p:vec3<f32>) -> vec3<i32> {
+  return vec3<i32>(floor(p * ${(1 / GRID_SPACING).toFixed(3)}));
+}
+
+fn particleHash (p:vec3<f32>) -> u32 {
+  return bucketHash(particleBucket(p));
+} 
+`
 
 async function main () {
   const adapter = mustHave(await navigator.gpu.requestAdapter())
@@ -450,6 +480,322 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
 `
   })
 
+  const clearBufferPipeline = device.createComputePipeline({
+    label: 'clearBufferPipeline',
+    layout: 'auto',
+    compute: {
+      module: device.createShaderModule({
+        label: 'clearBufferShader',
+        code: `
+@binding(0) @group(0) var<storage, read_write> buffer : array<u32>;
+
+@compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE}, 1, 1) fn clearGrids (@builtin(global_invocation_id) globalVec : vec3<u32>) {
+  buffer[globalVec.x] = 0u;
+}`
+      }),
+      entryPoint: 'clearGrids'
+    }
+  })
+
+  const gridCountPipeline = device.createComputePipeline({
+    label: 'gridCountPipeline',
+    layout: 'auto',
+    compute: {
+      module: device.createShaderModule({
+        label: 'gridCountShader',
+        code: `
+${COMMON_SHADER_FUNCS}
+
+@binding(0) @group(0) var<storage, read> positions : array<vec4<f32>>;
+@binding(1) @group(0) var<storage, read_write> hashCounts : array<atomic<u32>>;
+
+@compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn countParticles (@builtin(global_invocation_id) globalVec : vec3<u32>) {
+  var id = globalVec.x;
+  var bucket = particleHash(positions[id].xyz);
+  atomicAdd(&hashCounts[bucket], 1u);
+}`
+      }),
+      entryPoint: 'countParticles'
+    }
+  })
+
+  const gridCopyParticlePipeline = device.createComputePipeline({
+    label: 'gridCopyParticles',
+    layout: 'auto',
+    compute: {
+      module: device.createShaderModule({
+        label: 'gridCopyShader',
+        code: `
+${COMMON_SHADER_FUNCS}
+
+@binding(0) @group(0) var<storage, read> positions : array<vec4<f32>>;
+@binding(1) @group(0) var<storage, read_write> hashCounts : array<atomic<u32>>;
+@binding(2) @group(0) var<storage, read_write> particleIds : array<u32>;
+
+@compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn copyParticleIds (@builtin(global_invocation_id) globalVec : vec3<u32>) {
+  var id = globalVec.x;
+  var bucket = particleHash(positions[id].xyz);
+  var offset = atomicSub(&hashCounts[bucket], 1u) - 1u;
+  particleIds[offset] = id;
+}
+`,
+      }),
+      entryPoint: 'copyParticleIds'
+    }
+  })
+
+  const contactCommonCode = `
+  ${COMMON_SHADER_FUNCS}
+
+@binding(0) @group(0) var<storage, read> positions : array<vec4<f32>>;
+@binding(1) @group(0) var<storage, read> hashCounts : array<u32>;
+@binding(2) @group(0) var<storage, read> particleIds : array<u32>;
+
+struct BucketContents {
+  ids : array<i32, ${MAX_BUCKET_SIZE}>,
+  xyz : array<vec3<f32>, ${MAX_BUCKET_SIZE}>,
+  count : u32,
+}
+
+fn readBucketNeighborhood (centerId:u32) -> array<array<array<BucketContents, 2>, 2>, 2> {
+  var result : array<array<array<BucketContents, 2>, 2>, 2>;
+
+  for (var i = 0; i < 2; i = i + 1) {
+    for (var j = 0; j < 2; j = j + 1) {
+      for (var k = 0; k < 2; k = k + 1) {
+        var bucketId = (centerId + bucketHash(vec3<i32>(i, j, k))) % ${COLLISION_TABLE_SIZE}u;
+        var bucketStart = hashCounts[bucketId];
+        var bucketEnd = ${COLLISION_TABLE_SIZE}u;
+        if bucketId < ${COLLISION_TABLE_SIZE} {
+          bucketEnd = hashCounts[bucketId + 1];
+        }
+        result[i][j][k].count = min(bucketEnd - bucketStart, ${MAX_BUCKET_SIZE}u);
+        for (var n = 0u; n < ${MAX_BUCKET_SIZE}u; n = n + 1u) {
+          var p = bucketStart + n;
+          if p >= bucketEnd {
+            result[i][j][k].ids[n] = -1;
+          } else {
+            result[i][j][k].ids[n] = i32(particleIds[p]);
+          }
+        }
+        for (var n = 0u; n < ${MAX_BUCKET_SIZE}u; n = n + 1u) {
+          if (n >= result[i][j][k].count) {
+            break;
+          }
+          result[i][j][k].xyz[n] = positions[result[i][j][k].ids[n]].xyz;
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+fn testOverlap (a:vec3<f32>, b:vec3<f32>) -> f32 {
+  var d = a - b;
+  return dot(d, d) - ${PARTICLE_RADIUS * PARTICLE_RADIUS};
+}
+`
+
+  const contactCountPipeline = device.createComputePipeline({
+    label: 'contactCountPipeline',
+    layout: 'auto',
+    compute: {
+      module: device.createShaderModule({
+        label: 'contactCountShader',
+        code: `
+${contactCommonCode}
+
+@binding(3) @group(0) var<storage, read_write> contactCount : array<u32>;
+
+
+fn countBucketContacts (a:BucketContents, b:BucketContents) -> u32 {
+  var count = 0u;
+  for (var i = 0u; i < ${MAX_BUCKET_SIZE}u; i = i + 1u) {
+    if (i >= a.count) {
+      break;
+    }
+    for (var j = 0u; j < ${MAX_BUCKET_SIZE}u; j = j + 1u) {
+      if (j >= b.count) {
+        break;
+      }
+      if (testOverlap(a.xyz[i], b.xyz[j]) < 0.) {
+        count = count + 1u;
+      }
+    }
+  }
+  return count;
+}
+
+fn countCenterContacts (a:BucketContents) -> u32 {
+  var count = 0u;
+  for (var i = 0u; i < ${MAX_BUCKET_SIZE}u; i = i + 1u) {
+    if (i >= a.count) {
+      break;
+    }
+    for (var j = 0u; j < i; j = j + 1u) {
+      if (testOverlap(a.xyz[i], a.xyz[j]) < 0.) {
+        count = count + 1u;
+      }
+    }
+  }
+  return count;
+}
+
+@compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn countContacts (@builtin(global_invocation_id) globalVec : vec3<u32>) {
+  var id = globalVec.x;
+  var buckets = readBucketNeighborhood(id);
+
+  contactCount[id] = countCenterContacts(buckets[0][0][0]) +
+    countBucketContacts(buckets[0][0][0], buckets[0][0][1]) +
+    countBucketContacts(buckets[0][0][0], buckets[0][1][0]) +
+    countBucketContacts(buckets[0][0][0], buckets[0][1][1]) +
+    countBucketContacts(buckets[0][0][0], buckets[1][0][0]) +
+    countBucketContacts(buckets[0][0][0], buckets[1][0][1]) +
+    countBucketContacts(buckets[0][0][0], buckets[1][1][0]) +
+    countBucketContacts(buckets[0][0][0], buckets[1][1][1]);
+}`
+      }),
+      entryPoint: 'countContacts'
+    }
+  })
+
+  const contactListPipeline = device.createComputePipeline({
+    label: 'contactListPipeline',
+    layout: 'auto',
+    compute: {
+      module: device.createShaderModule({
+        label: 'contactListShader',
+        code: `
+${contactCommonCode}
+
+@binding(3) @group(0) var<storage, read> contactCount : array<u32>;
+@binding(4) @group(0) var<storage, read_write> contactList : array<vec2<i32>>;
+
+fn emitBucketContacts (a:BucketContents, b:BucketContents, offset:u32) -> u32 {
+  if (offset >= ${CONTACT_TABLE_SIZE}u) {
+    return offset;
+  }
+  var shift = offset;
+  for (var i = 0u; i < ${MAX_BUCKET_SIZE}u; i = i + 1u) {
+    if (i >= a.count) {
+      break;
+    }
+    for (var j = 0u; j < ${MAX_BUCKET_SIZE}u; j = j + 1u) {
+      if (j >= b.count) {
+        break;
+      }
+      if (testOverlap(a.xyz[i], b.xyz[j]) < 0.) {
+        contactList[shift] = vec2<i32>(a.ids[i], b.ids[j]);
+        shift = shift + 1u;
+        if (shift >= ${CONTACT_TABLE_SIZE}u) {
+          return shift;
+        }
+      }
+    }
+  }
+  return shift;
+}
+
+fn emitCenterContacts (a:BucketContents, offset:u32) -> u32 {
+  if (offset >= ${CONTACT_TABLE_SIZE}u) {
+    return offset;
+  }
+  var shift = offset;
+  for (var i = 1u; i < ${MAX_BUCKET_SIZE}u; i = i + 1u) {
+    if (i >= a.count) {
+      break;
+    }
+    for (var j = 0u; j < i; j = j + 1u) {
+      if (testOverlap(a.xyz[i], a.xyz[j]) < 0.) {
+        contactList[shift] = vec2<i32>(a.ids[i], a.ids[j]);
+        shift = shift + 1u;
+        if (shift >= ${CONTACT_TABLE_SIZE}u) {
+          return shift;
+        }
+      }
+    }
+  }
+  return shift;
+}
+
+@compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn countContacts (@builtin(global_invocation_id) globalVec : vec3<u32>) {
+  var id = globalVec.x;
+  var buckets = readBucketNeighborhood(id);
+  var offset = 0u;
+  if id > 0u {
+    offset = contactCount[id - 1u];
+  }
+
+  offset = emitCenterContacts(buckets[0][0][0], offset);
+  offset = emitBucketContacts(buckets[0][0][0], buckets[0][0][1], offset);
+  offset = emitBucketContacts(buckets[0][0][0], buckets[0][1][0], offset);
+  offset = emitBucketContacts(buckets[0][0][0], buckets[0][1][1], offset);
+  offset = emitBucketContacts(buckets[0][0][0], buckets[1][0][0], offset);
+  offset = emitBucketContacts(buckets[0][0][0], buckets[1][0][1], offset);
+  offset = emitBucketContacts(buckets[0][0][0], buckets[1][1][0], offset);
+  offset = emitBucketContacts(buckets[0][0][0], buckets[1][1][1], offset);  
+}`
+      }),
+      entryPoint: 'countContacts'
+    }
+  })
+
+  const renderContactShader = device.createShaderModule({
+    label: 'renderContactShader',
+    code: `
+struct Uniforms {
+  view : mat4x4<f32>,
+  proj : mat4x4<f32>,
+  projInv: mat4x4<f32>,
+  fog : vec4<f32>,
+  lightDir : vec4<f32>,
+  eye : vec4<f32>
+}
+@binding(0) @group(0) var<uniform> uniforms : Uniforms;
+@binding(0) @group(1) var<storage, read> position : array<vec4<f32>>;
+@binding(1) @group(1) var<storage, read> contactId : array<u32>;
+
+@vertex fn vertMain (@builtin(vertex_index) vertexIndex : u32) -> @builtin(position) vec4<f32> {
+  var pos = position[contactId[vertexIndex]].xyz;
+  return uniforms.proj * uniforms.view * vec4(pos, 1.);
+}
+
+@fragment fn fragMain () -> @location(0) vec4<f32> {
+  return vec4(1., 0., 0., 1.);
+}
+`
+  })
+
+  const particleGridCountBuffer = device.createBuffer({
+    label: 'particleGridCount',
+    size: 4 * COLLISION_TABLE_SIZE,
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
+  })
+  const particleGridIdBuffer = device.createBuffer({
+    label: 'particleGridEntry',
+    size: 4 * NUM_PARTICLES,
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
+  })
+  const particleContactCountBuffer = device.createBuffer({
+    label: 'particleContactCount',
+    size: 4 * COLLISION_TABLE_SIZE,
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
+  })
+  const contactListBuffer = device.createBuffer({
+    label: 'contactListBuffer',
+    size: 2 * 4 * CONTACT_TABLE_SIZE,
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true
+  })
+  particleGridCountBuffer.unmap()
+  particleGridIdBuffer.unmap()
+  particleContactCountBuffer.unmap()
+  contactListBuffer.unmap()
+  
   const particlePositionBuffer = device.createBuffer({
     label: 'particlePosition',
     size: 4 * 4 * NUM_PARTICLES,
@@ -513,7 +859,7 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
     for (let i = 0; i < NUM_PARTICLES; ++i) {
       const color = PALETTE[1 + (i % (PALETTE.length - 1))]
       for (let j = 0; j < 4; ++j) {
-        particlePositionData[4 * i + j] = 2 * Math.random() - 1
+        particlePositionData[4 * i + j] = 1.5 * (2 * Math.random() - 1)
         particleColorData[4 * i + j] = color[j]
         particleRotationData[4 *i + j] = Math.random() - 0.5
         particleVelocityData[4 * i + j] = 0
@@ -532,6 +878,101 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
   particlePositionCorrectionBuffer.unmap()
   particleRotationPredictionBuffer.unmap()
   particleRotationCorrectionBuffer.unmap()
+
+  const [ clearGridBindGroup, clearContactBindGroup, clearContactListBindGroup ] =
+    [particleGridCountBuffer, particleContactCountBuffer, contactListBuffer].map((buffer) => 
+      device.createBindGroup({
+        layout: clearBufferPipeline.getBindGroupLayout(0),
+        entries: [{
+          binding: 0,
+          resource: {
+            buffer
+          }
+        }]
+      }))
+
+  const gridCountBindGroup = device.createBindGroup({
+    layout: gridCountPipeline.getBindGroupLayout(0),
+    entries: [{
+      binding: 0,
+      resource: {
+        buffer: particlePositionBuffer
+      }
+    }, {
+      binding: 1,
+      resource: {
+        buffer: particleGridCountBuffer
+      }
+    }]
+  })
+
+  const gridCopyBindGroup = device.createBindGroup({
+    layout: gridCopyParticlePipeline.getBindGroupLayout(0),
+    entries: [{
+      binding: 0,
+      resource: {
+        buffer: particlePositionBuffer
+      }
+    }, {
+      binding: 1,
+      resource: {
+        buffer: particleGridCountBuffer
+      }
+    }, {
+      binding: 2,
+      resource: {
+        buffer: particleGridIdBuffer
+      }
+    }]
+  })
+
+  const contactCountBindGroup = device.createBindGroup({
+    layout: contactCountPipeline.getBindGroupLayout(0),
+    entries: [
+      particlePositionBuffer,
+      particleGridCountBuffer,
+      particleGridIdBuffer,
+      particleContactCountBuffer
+    ].map((buffer, binding) => {
+      return {
+        binding,
+        resource: {
+          buffer
+        }
+      }
+    })
+  })
+
+  const contactListBindGroup = device.createBindGroup({
+    layout: contactListPipeline.getBindGroupLayout(0),
+    entries: [
+      particlePositionBuffer,
+      particleGridCountBuffer,
+      particleGridIdBuffer,
+      particleContactCountBuffer,
+      contactListBuffer
+    ].map((buffer, binding) => {
+      return {
+        binding,
+        resource: {
+          buffer
+        }
+      }
+    })
+  })
+
+  const gridCountScan = new WebGPUScan({
+    device,
+    threadsPerGroup: SCAN_THREADS,
+    itemsPerThread: SCAN_ITEMS,
+    dataType: 'u32',
+    dataSize: 4,
+    dataFunc: 'A + B',
+    dataUnit: '0u'
+  })
+
+  const gridCountScanPass = await gridCountScan.createPass(COLLISION_TABLE_SIZE, particleGridCountBuffer)
+  const contactCountScanPass = await gridCountScan.createPass(COLLISION_TABLE_SIZE, particleContactCountBuffer)
 
   const spriteQuadUV = device.createBuffer({
     size: 2 * 4 * 4,
@@ -559,7 +1000,7 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
   } as const)
 
   const renderParticleBindGroupLayout = device.createBindGroupLayout({
-    label: 'particleRenderBufferBindGroup',
+    label: 'renderParticleBindGroupLayout',
     entries: [{
       binding: 0,
       visibility: GPUShaderStage.VERTEX,
@@ -585,6 +1026,26 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
       }
     }
     ]
+  } as const)
+
+  const renderContactsBindGroupLayout = device.createBindGroupLayout({
+    label: 'renderContactsBindGroupLayout',
+    entries: [{
+      binding: 0,
+      visibility: GPUShaderStage.VERTEX,
+      buffer: {
+        type: 'read-only-storage',
+        hasDynamicOffset: false,
+      }
+    },
+    {
+      binding: 1,
+      visibility: GPUShaderStage.VERTEX,
+      buffer: {
+        type: 'read-only-storage',
+        hasDynamicOffset: false,
+      }
+    }]
   } as const)
 
   const renderUniformData = new Float32Array(1024)
@@ -646,7 +1107,7 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
   const renderBackgroundPipeline = device.createRenderPipeline({
     label: 'renderBackgroundPipeline',
     layout: device.createPipelineLayout({
-      label: 'bgLayout',
+      label: 'renderBackgroundPipelineLayout',
       bindGroupLayouts: [
         renderUniformBindGroupLayout,
       ]
@@ -654,14 +1115,6 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
     vertex: {
       module: backroundShader,
       entryPoint: 'vertMain',
-      buffers: [{
-        arrayStride: 2 * 4,
-        attributes: [{
-          shaderLocation: 0,
-          offset: 0,
-          format: 'float32x2',
-        }]
-      }]
     },
     fragment: {
       module: backroundShader,
@@ -673,6 +1126,34 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
     },
     depthStencil: {
       depthWriteEnabled: true,
+      depthCompare: 'always',
+      format: 'depth24plus'
+    }
+  } as const)
+
+  const renderContactPipeline = device.createRenderPipeline({
+    label: 'renderContactPipeline',
+    layout: device.createPipelineLayout({
+      label: 'renderContactPipelineLayout',
+      bindGroupLayouts: [
+        renderUniformBindGroupLayout,
+        renderContactsBindGroupLayout
+      ]
+    }),
+    vertex: {
+      module: renderContactShader,
+      entryPoint: 'vertMain',
+    },
+    fragment: {
+      module: renderContactShader,
+      entryPoint: 'fragMain',
+      targets: [{ format: presentationFormat }],
+    },
+    primitive: {
+      topology: 'line-list',
+    },
+    depthStencil: {
+      depthWriteEnabled: false,
       depthCompare: 'always',
       format: 'depth24plus'
     }
@@ -773,6 +1254,26 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
       }
     ]
   })
+
+  const renderContactBindGroup = device.createBindGroup({
+    label: 'renderContactBindGroup',
+    layout: renderContactsBindGroupLayout,
+    entries: [
+      {
+        binding: 0,
+        resource: {
+          buffer: particlePositionBuffer
+        }
+      },
+      {
+        binding: 1,
+        resource: {
+          buffer: contactListBuffer
+        }
+      }
+    ]
+  })
+  
     
   function frame (tick:number) {
     mat4.perspective(projection, Math.PI / 4, canvas.width / canvas.height, 0.01, 50)
@@ -812,19 +1313,58 @@ fn qMultiply(a:vec4<f32>, b:vec4<f32>) -> vec4<f32> {
     passEncoder.setPipeline(renderParticlePipeline);
     passEncoder.draw(4, NUM_PARTICLES)
 
+    passEncoder.setBindGroup(1, renderContactBindGroup)
+    passEncoder.setPipeline(renderContactPipeline)
+    passEncoder.draw(2 * CONTACT_TABLE_SIZE)
+
     passEncoder.end()
 
     const computePass = commandEncoder.beginComputePass()
+
+    // do collision detection
+    const NGROUPS = NUM_PARTICLES / PARTICLE_WORKGROUP_SIZE
+
+    // initialize buffers
+    computePass.setPipeline(clearBufferPipeline)
+    computePass.setBindGroup(0, clearGridBindGroup)
+    computePass.dispatchWorkgroups(NGROUPS)
+    computePass.setBindGroup(0, clearContactBindGroup)
+    computePass.dispatchWorkgroups(NGROUPS)
+    computePass.setBindGroup(0, clearContactListBindGroup)
+    computePass.dispatchWorkgroups(CONTACT_TABLE_SIZE / PARTICLE_WORKGROUP_SIZE)
+
+    // bin particles
+    computePass.setBindGroup(0, gridCountBindGroup)
+    computePass.setPipeline(gridCountPipeline)
+    computePass.dispatchWorkgroups(NGROUPS)
+    gridCountScanPass.run(computePass)
+    computePass.setBindGroup(0, gridCopyBindGroup)
+    computePass.setPipeline(gridCopyParticlePipeline)
+    computePass.dispatchWorkgroups(NGROUPS)
+
+    // find contacts (uses sphere-sphere check only)
+    computePass.setBindGroup(0, contactCountBindGroup)
+    computePass.setPipeline(contactCountPipeline)
+    computePass.dispatchWorkgroups(NGROUPS)
+    contactCountScanPass.run(computePass)
+    computePass.setBindGroup(0, contactListBindGroup)
+    computePass.setPipeline(contactListPipeline)
+    computePass.dispatchWorkgroups(NGROUPS)
+
     for (let i = 0; i < SUBSTEPS; ++i) {
+      // predict positions
       computePass.setBindGroup(0, predictBindGroup)
       computePass.setPipeline(predictPipeline)
-      computePass.dispatchWorkgroups(NUM_PARTICLES / PARTICLE_WORKGROUP_SIZE)
+      computePass.dispatchWorkgroups(NGROUPS)
 
-      // solve constraints
+      // todo: solve contact position constraints
 
+      // update velocity
       computePass.setBindGroup(0, updateBindGroup)
       computePass.setPipeline(updatePipeline)
-      computePass.dispatchWorkgroups(NUM_PARTICLES / PARTICLE_WORKGROUP_SIZE)
+      computePass.dispatchWorkgroups(NGROUPS)
+
+      // todo: solve contact velocity constraints
     }
     computePass.end()
 
