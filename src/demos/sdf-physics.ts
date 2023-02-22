@@ -37,7 +37,9 @@ const SUBSTEPS = 10
 const SUB_DT = DT / SUBSTEPS
 const JACOBI_POS = 0.25
 const JACOBI_ROT = 0.25
-const GRAVITY = 0.0
+const GRAVITY = 0.5
+const POS_DAMPING = 0.05
+const ROT_DAMPING = 0.01
 
 // assume all bodies have same inertia tensor, whatever
 const PARTICLE_INERTIA_TENSOR = mat3.identity(mat3.create())
@@ -481,7 +483,7 @@ ${PHYSICS_COMMON}
   var p = position[id];
   var prevPosition = p.xyz;
   var nextPosition = predictedPosition[id].xyz + ${JACOBI_POS} * positionUpdate[id].xyz;
-  velocity[id] = vec4((nextPosition - prevPosition) * ${(1 / SUB_DT).toFixed(3)}, 0.);
+  velocity[id] = vec4(${Math.exp(-SUB_DT * POS_DAMPING)} * (nextPosition - prevPosition) * ${(1 / SUB_DT).toFixed(3)}, 0.);
   position[id] = vec4(nextPosition, p.w);
 
   var prevQ = rotation[id];
@@ -489,9 +491,9 @@ ${PHYSICS_COMMON}
 
   var dQ = qMultiply(nextQ, vec4(-prevQ.xyz, prevQ.w));
   if dQ.w < 0. {
-    angVelocity[id] = vec4(-${(2 / SUB_DT).toFixed()} * dQ.xyz, 0.);
+    angVelocity[id] = vec4(-${(2 / SUB_DT) * Math.exp(-SUB_DT * ROT_DAMPING)} * dQ.xyz, 0.);
   } else {
-    angVelocity[id] = vec4(${(2 / SUB_DT).toFixed()} * dQ.xyz, 0.);
+    angVelocity[id] = vec4(${(2 / SUB_DT) * Math.exp(-SUB_DT * ROT_DAMPING)} * dQ.xyz, 0.);
   }
   rotation[id] = nextQ;
 }
@@ -783,6 +785,49 @@ struct Uniforms {
   return vec4(1., 0., 0., 1.);
 }
 `
+  })
+
+  const solveTerrainPositionPipeline = device.createComputePipeline({
+    label: 'solveTerrainPositionPipeline',
+    layout: 'auto',
+    compute: {
+      module: device.createShaderModule({
+        label: 'solveTerrainPositionShader',
+        code: `
+${COMMON_SHADER_FUNCS}
+${PHYSICS_COMMON}
+
+@binding(0) @group(0) var<storage, read_write> position : array<vec4<f32>>;
+@binding(1) @group(0) var<storage, read_write> rotation : array<vec4<f32>>;
+
+fn terrainGrad (pos : vec3<f32>) -> vec3<f32> {
+  var e = vec2<f32>(1.0,-1.0)*0.5773;
+  const eps = 0.0005;
+  return normalize( e.xyy*terrainSDF( pos + e.xyy*eps ) + 
+            e.yyx*terrainSDF( pos + e.yyx*eps ) + 
+            e.yxy*terrainSDF( pos + e.yxy*eps ) + 
+					  e.xxx*terrainSDF( pos + e.xxx*eps ) );
+}
+
+
+@compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn solveTerrainPosition (@builtin(global_invocation_id) globalVec : vec3<u32>) {
+  var id = globalVec.x;
+  var p = position[id].xyz;
+  var d0 = terrainSDF(p);
+  if d0 >= ${PARTICLE_RADIUS} {
+    return;
+  }
+
+  var q = rotation[id];
+  var R = qMatrix(q);
+
+  position[id] = vec4(p.xyz - terrainGrad(p) * (d0 - ${PARTICLE_RADIUS}), 0);
+  rotation[id] = q;
+}
+`
+      }),
+      entryPoint: 'solveTerrainPosition',
+    }
   })
 
   const particleGridCountBuffer = device.createBuffer({
@@ -1244,6 +1289,20 @@ struct Uniforms {
     })
   } as const)
 
+  const solveTerrainPositionBindGroup = device.createBindGroup({
+    label: 'solveTerrainPositionBindGroup',
+    layout: solveTerrainPositionPipeline.getBindGroupLayout(0),
+    entries: [
+      particlePositionPredictionBuffer,
+      particleRotationPredictionBuffer
+    ].map((buffer, binding) => {
+      return {
+        binding,
+        resource: { buffer }
+      }
+    })
+  })
+
   const renderUniformBindGroup = device.createBindGroup({
     label: 'uniformBindGroup',
     layout: renderUniformBindGroupLayout,
@@ -1385,6 +1444,11 @@ struct Uniforms {
       computePass.setPipeline(predictPipeline)
       computePass.dispatchWorkgroups(NGROUPS)
 
+      // solve terrain contacts
+      computePass.setBindGroup(0, solveTerrainPositionBindGroup)
+      computePass.setPipeline(solveTerrainPositionPipeline)
+      computePass.dispatchWorkgroups(NGROUPS)
+
       // todo: solve contact position constraints
 
       // update velocity
@@ -1392,6 +1456,7 @@ struct Uniforms {
       computePass.setPipeline(updatePipeline)
       computePass.dispatchWorkgroups(NGROUPS)
 
+      // todo: solve terrain velocity constraints
       // todo: solve contact velocity constraints
     }
     computePass.end()
