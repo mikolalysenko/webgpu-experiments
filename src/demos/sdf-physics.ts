@@ -1,6 +1,6 @@
 import { makeCanvas, mustHave } from '../boilerplate'
 import { WebGPUScan } from '../lib/scan'
-import { mat4, mat3, vec4, quat } from 'gl-matrix'
+import { mat4, mat3, vec4, quat, vec3 } from 'gl-matrix'
 
 const PALETTE = [
   [ 0.19215686274509805, 0.2235294117647059, 0.23529411764705882, 1 ],
@@ -102,8 +102,11 @@ fn upper3x3 (m:mat4x4<f32>) -> mat3x3<f32> {
 }
 
 fn particleSDF (p : vec3<f32>) -> f32 {
+  /*
   var q = vec2<f32>(length(p.xz)-${DONUT_RADIUS}, p.y);
   return length(q) - ${SWEEP_RADIUS};
+  */
+ return length(p) - ${SWEEP_RADIUS};
 }
 
 fn terrainSDF (p : vec3<f32>) -> f32 {
@@ -127,6 +130,104 @@ fn particleHash (p:vec3<f32>) -> u32 {
   return bucketHash(particleBucket(p));
 } 
 `
+
+function shapeHelpers ({sdf, suffix}:{
+  sdf:string,
+  suffix:string
+}) {
+
+  function eps(d:number) {
+    const v = [0,0,0]
+    v[d] = 0.001
+    return `vec3<f32>(${v.join()})`
+  }
+
+  return `
+fn grad${suffix} (p:vec3<f32>) -> vec3<f32> {
+  return normalize(
+    ${sdf}(p) - vec3<f32>(
+      ${sdf}(p - ${eps(0)}),
+      ${sdf}(p - ${eps(1)}),
+      ${sdf}(p - ${eps(2)})
+    )
+  );
+}
+
+fn sup${suffix} (n:vec3<f32>, x:vec3<f32>, r:f32, offset:f32) -> vec3<f32> {
+  var p = x + n * r;
+  var f = ${sdf}(p);
+  var df = normalize(
+    f - vec3<f32>(
+      ${sdf}(p - ${eps(0)}),
+      ${sdf}(p - ${eps(1)}),
+      ${sdf}(p - ${eps(2)})
+    )
+  );
+  return p - (sign(dot(df, n)) * min(abs(f - offset), r)) * df;
+}
+`
+}
+
+function contactHelpers ({sdfA, sdfB, numIters}:{
+  sdfA:string,
+  sdfB:string,
+  numIters: number
+}) {
+  return `
+${shapeHelpers({ sdf: sdfA, suffix: 'A' })}
+${shapeHelpers({ sdf: sdfB, suffix: 'B' })}
+
+struct ContactResult {
+  ab : vec3<f32>,
+  hit : bool,
+};
+
+fn solveContact (posA : vec3<f32>, posB : vec3<f32>, scale : f32) -> ContactResult {
+  var qA = posB;
+  var qB = posA;
+  
+  var n0 = vec3<f32>();
+  var x0 = 0.5 * (qA + qB);
+
+  var offset = scale;
+  var fa = ${sdfA}(qB) - offset;
+  var fb = ${sdfB}(qA) - offset;
+
+  for (var iter = 0; iter < ${numIters}; iter = iter + 1) {
+    offset = 0.5 * offset;
+
+    var rad = length(qA - qB) + max(abs(fa), abs(fb));
+
+    n0 = gradB(x0);
+    qA = supA(-n0, x0, rad, offset);
+    fb = ${sdfB}(qA) - offset;
+    if fb > 0. {
+      qA = qA - fb * gradB(qA);
+    }
+    x0 = qA;
+
+    n0 = gradA(x0);
+    qB = supB(-n0, x0, rad, offset);
+    fa = ${sdfA}(qB) - offset;
+    if fa > 0. {
+      qB = qB - fa * gradA(qB);
+    }
+    x0 = qB;
+  }
+
+  var result : ContactResult;
+  var q = 0.5 * (qA + qB);
+  if max(${sdfA}(q), ${sdfB}(q)) < 0. {
+    result.ab = qB - qA;
+    result.hit = true;
+  } else {
+    result.ab = qA - qB;
+    result.hit = false;
+  }
+  return result;
+}
+`
+}
 
 async function main () {
   const adapter = mustHave(await navigator.gpu.requestAdapter())
@@ -271,9 +372,9 @@ struct Uniforms {
   eye : vec4<f32>
 }
 @binding(0) @group(0) var<uniform> uniforms : Uniforms;
-@binding(0) @group(1) var<storage, read> position : array<vec4<f32>>;
-@binding(1) @group(1) var<storage, read> rotation : array<vec4<f32>>;
-@binding(2) @group(1) var<storage, read> color : array<vec4<f32>>;
+@binding(0) @group(1) var<storage, read> particlePosition : array<vec4<f32>>;
+@binding(1) @group(1) var<storage, read> particleRotation : array<vec4<f32>>;
+@binding(2) @group(1) var<storage, read> particleColor : array<vec4<f32>>;
 
 struct VertexOutput {
   @builtin(position) clipPosition : vec4<f32>,
@@ -292,11 +393,11 @@ fn vertMain(
   @location(0) uv : vec2<f32>,
 ) -> VertexOutput {
   var result : VertexOutput;
-  result.particleColor = color[instanceIdx];
+  result.particleColor = particleColor[instanceIdx];
 
   var sdfMat = rigidMotion(
-    rotation[instanceIdx],
-    position[instanceIdx]);
+    particleRotation[instanceIdx],
+    particlePosition[instanceIdx]);
   result.model0 = sdfMat[0];
   result.model1 = sdfMat[1];
   result.model2 = sdfMat[2];
@@ -773,11 +874,11 @@ struct Uniforms {
   eye : vec4<f32>
 }
 @binding(0) @group(0) var<uniform> uniforms : Uniforms;
-@binding(0) @group(1) var<storage, read> position : array<vec4<f32>>;
+@binding(0) @group(1) var<storage, read> particlePosition : array<vec4<f32>>;
 @binding(1) @group(1) var<storage, read> contactId : array<u32>;
 
 @vertex fn vertMain (@builtin(vertex_index) vertexIndex : u32) -> @builtin(position) vec4<f32> {
-  var pos = position[contactId[vertexIndex]].xyz;
+  var pos = particlePosition[contactId[vertexIndex]].xyz;
   return uniforms.proj * uniforms.view * vec4(pos, 1.);
 }
 
@@ -797,18 +898,22 @@ struct Uniforms {
 ${COMMON_SHADER_FUNCS}
 ${PHYSICS_COMMON}
 
+
 @binding(0) @group(0) var<storage, read_write> position : array<vec4<f32>>;
 @binding(1) @group(0) var<storage, read_write> rotation : array<vec4<f32>>;
 
-fn terrainGrad (pos : vec3<f32>) -> vec3<f32> {
-  var e = vec2<f32>(1.0,-1.0)*0.5773;
-  const eps = 0.0005;
-  return normalize( e.xyy*terrainSDF( pos + e.xyy*eps ) + 
-            e.yyx*terrainSDF( pos + e.yyx*eps ) + 
-            e.yxy*terrainSDF( pos + e.yxy*eps ) + 
-					  e.xxx*terrainSDF( pos + e.xxx*eps ) );
+var<private> shapeRot : mat3x3<f32> = mat3x3<f32>();
+var<private> shapePos : vec3<f32> = vec3<f32>();
+
+fn shapeSDF (p : vec3<f32>) -> f32 {
+  return particleSDF(shapeRot * (p - shapePos));
 }
 
+${contactHelpers({
+  sdfA: 'terrainSDF',
+  sdfB: 'shapeSDF',
+  numIters: 8,
+})}
 
 @compute @workgroup_size(${PARTICLE_WORKGROUP_SIZE},1,1) fn solveTerrainPosition (@builtin(global_invocation_id) globalVec : vec3<u32>) {
   var id = globalVec.x;
@@ -818,11 +923,24 @@ fn terrainGrad (pos : vec3<f32>) -> vec3<f32> {
     return;
   }
 
-  var q = rotation[id];
-  var R = qMatrix(q);
+  position[id] = vec4(p.xyz - gradA(p) * (d0 - ${PARTICLE_RADIUS}), 0);
+  return;
+  if d0 <= -${PARTICLE_RADIUS} {
+    position[id] = vec4(p.xyz - gradA(p) * (d0 - ${PARTICLE_RADIUS}), 0);
+    return;
+  }
 
-  position[id] = vec4(p.xyz - terrainGrad(p) * (d0 - ${PARTICLE_RADIUS}), 0);
-  rotation[id] = q;
+  shapePos = p;
+  var q = rotation[id];
+  shapeRot = qMatrix(q);
+  
+  var contact = solveContact(p - gradA(p) * ${PARTICLE_RADIUS}, p, ${2 * PARTICLE_RADIUS});
+  if !contact.hit {
+    return;
+  }
+
+  position[id] = vec4(p.xyz - contact.ab, 0);
+  rotation[id] = vec4(0., 0., 0., 1.);
 }
 `
       }),
